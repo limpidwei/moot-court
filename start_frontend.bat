@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-python -m streamlit run frontend/app.py
+cd /d "%~dp0frontend-next"
+npm run dev
