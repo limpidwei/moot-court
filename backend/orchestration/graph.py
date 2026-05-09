@@ -1,280 +1,310 @@
 """
-LangGraph 庭审状态机
+LangGraph 庭审状态机 v2.0
 
-庭审流程（依照《中华人民共和国民事诉讼法》）：
+8 阶段 + 分步确认 + 交叉询问 + 证据目录
 
-    START
-      │
-      ▼
-  [原告律师: 起诉策略 + 陈述]
-      │
-      ▼
-  [被告律师: 答辩]
-      │
-      ▼
-  [法官: 归纳争议焦点]
-      │
-      ▼
-  [法官主持: 举证质证]
-      │
-      ▼
-  [原告律师: 最后陈述]
-      │
-      ▼
-  [被告律师: 最后陈述]
-      │
-      ▼
-  [法官: 判决 + 胜率评估]
-      │
-      ▼
-     END
+流程：
+
+Phase 1  ─ 原告律师：请求权基础分析    [用户确认]
+Phase 2  ─ 原告律师：起诉状 + 证据目录   [用户确认]
+Phase 3  ─ 被告律师：答辩策略分析        [用户确认]
+Phase 4  ─ 被告律师：答辩状 + 证据目录   [用户确认]
+Phase 5  ─ 法官：争议焦点归纳
+Phase 6  ─ 法庭辩论（交叉询问 + 举证质证）
+Phase 7  ─ 双方最后陈述
+Phase 8  ─ 法官：判决 + 胜率评估
 """
 
-from typing import TypedDict
-from langgraph.graph import StateGraph, END
-
+from typing import TypedDict, Optional
+from dataclasses import dataclass, field
 from ..llm import llm_call
-from ..models.case import CaseInput, TrialRecord
+from ..models.case import CaseInput
 from .prompts import (
-    PLAINTIFF_PROMPT, DEFENDANT_PROMPT, JUDGE_PROMPT,
-    build_plaintiff_message, build_defendant_message,
-    build_judge_issues_message, build_evidence_exam_message,
-    build_judgment_message,
+    PLAINTIFF_SYSTEM, DEFENDANT_SYSTEM, JUDGE_SYSTEM,
+    build_plaintiff_phase1_msg, build_plaintiff_phase2_msg,
+    build_defendant_phase3_msg, build_defendant_phase4_msg,
+    build_judge_phase5_msg, build_cross_exam_msg,
+    build_evidence_exam_msg, build_final_statement_plaintiff_msg,
+    build_final_statement_defendant_msg, build_judgment_msg,
 )
 
 
 # ---- 状态定义 ----
-class TrialState(TypedDict):
-    case_title: str
-    facts: str
-    evidence: str
-    claims: str
+@dataclass
+class TrialSession:
+    """庭审会话状态，在内存中持久化"""
+    case_input: CaseInput
+    current_phase: int = 0  # 0=未开始, 1-8=各阶段
+    user_role: str = "neutral"  # plaintiff / defendant / neutral
 
-    # 各阶段产出
-    plaintiff_opening: str
-    defendant_response: str
-    disputed_issues: str
-    evidence_exam: str
-    plaintiff_final: str
-    defendant_final: str
-    judgment: str
-    win_rate: float
+    # Phase 1-2 产出
+    phase1_analysis: str = ""
+    phase2_complaint: str = ""
+    phase2_evidence_catalog: str = ""
+
+    # Phase 3-4 产出
+    phase3_analysis: str = ""
+    phase4_answer: str = ""
+    phase4_evidence_catalog: str = ""
+
+    # Phase 5
+    phase5_issues: str = ""
+
+    # Phase 6
+    phase6_cross_exam: str = ""     # JSON 字符串
+    phase6_evidence_exam: str = ""
+
+    # Phase 7
+    phase7_plaintiff_final: str = ""
+    phase7_defendant_final: str = ""
+
+    # Phase 8
+    phase8_judgment: str = ""
+    phase8_win_rate: float = 0.0
+
+    # 控制
+    phase1_confirmed: bool = False
+    phase2_confirmed: bool = False
+    phase3_confirmed: bool = False
+    phase4_confirmed: bool = False
 
 
-# ---- 节点函数 ----
-def node_plaintiff_opening(state: TrialState) -> dict:
-    """原告律师：起诉策略分析 + 陈述"""
-    msg = build_plaintiff_message(
-        state["case_title"], state["facts"],
-        state["evidence"], state["claims"]
+PHASE_LABELS = {
+    1: "原告律师：请求权基础分析",
+    2: "原告律师：起诉状与证据目录",
+    3: "被告律师：答辩策略分析",
+    4: "被告律师：答辩状与证据目录",
+    5: "法官：争议焦点归纳",
+    6: "法庭辩论：交叉询问与举证质证",
+    7: "双方最后陈述",
+    8: "法官：判决与胜率评估",
+}
+
+
+def needs_confirmation(phase: int, user_role: str) -> bool:
+    """判断该阶段是否需要用户确认"""
+    if user_role == "plaintiff" and phase in (1, 2):
+        return True
+    if user_role == "defendant" and phase in (3, 4):
+        return True
+    return False
+
+
+# ---- 各阶段执行函数 ----
+def run_phase1(session: TrialSession) -> str:
+    """Phase 1: 原告律师请求权基础分析"""
+    msg = build_plaintiff_phase1_msg(
+        session.case_input.case_title,
+        session.case_input.facts,
+        session.case_input.evidence,
+        session.case_input.claims,
     )
-    result = llm_call(PLAINTIFF_PROMPT, msg)
-    return {"plaintiff_opening": result}
+    result = llm_call(PLAINTIFF_SYSTEM, msg)
+    session.phase1_analysis = result
+    session.current_phase = 1
+    return result
 
 
-def node_defendant_response(state: TrialState) -> dict:
-    """被告律师：答辩"""
-    msg = build_defendant_message(
-        state["case_title"], state["facts"],
-        state["evidence"], state["claims"],
-        state["plaintiff_opening"]
+def run_phase2(session: TrialSession) -> str:
+    """Phase 2: 原告律师撰写起诉状和证据目录"""
+    msg = build_plaintiff_phase2_msg(
+        session.phase1_analysis,
+        session.case_input.claims,
+        session.case_input.evidence,
     )
-    result = llm_call(DEFENDANT_PROMPT, msg)
-    return {"defendant_response": result}
+    result = llm_call(PLAINTIFF_SYSTEM, msg, max_tokens=8192)
+    session.phase2_complaint = result
+    session.current_phase = 2
+    return result
 
 
-def node_judge_issues(state: TrialState) -> dict:
-    """法官：归纳争议焦点"""
-    msg = build_judge_issues_message(
-        state["case_title"], state["facts"], state["claims"],
-        state["plaintiff_opening"], state["defendant_response"]
+def run_phase3(session: TrialSession) -> str:
+    """Phase 3: 被告律师答辩策略分析"""
+    msg = build_defendant_phase3_msg(
+        session.case_input.case_title,
+        session.case_input.facts,
+        session.case_input.evidence,
+        session.case_input.claims,
+        session.phase2_complaint,
+        "",  # plaintiff_evidence_catalog - embedded in complaint
     )
-    result = llm_call(JUDGE_PROMPT, msg)
-    return {"disputed_issues": result}
+    result = llm_call(DEFENDANT_SYSTEM, msg)
+    session.phase3_analysis = result
+    session.current_phase = 3
+    return result
 
 
-def node_evidence_exam(state: TrialState) -> dict:
-    """法官主持：举证质证"""
-    msg = build_evidence_exam_message(
-        state["case_title"],
-        state["plaintiff_opening"], state["defendant_response"],
-        state["evidence"]
+def run_phase4(session: TrialSession) -> str:
+    """Phase 4: 被告律师撰写答辩状和证据目录"""
+    msg = build_defendant_phase4_msg(
+        session.phase3_analysis,
+        session.phase2_complaint,
     )
-    result = llm_call(JUDGE_PROMPT, msg)
-    return {"evidence_exam": result}
+    result = llm_call(DEFENDANT_SYSTEM, msg, max_tokens=8192)
+    session.phase4_answer = result
+    session.current_phase = 4
+    return result
 
 
-def node_plaintiff_final(state: TrialState) -> dict:
-    """原告律师：最后陈述"""
-    msg = f"""请发表最后陈述（代理意见总结）。
-
-【案由】{state["case_title"]}
-【诉讼请求】{state["claims"]}
-
-【你的起诉分析】
-{state["plaintiff_opening"]}
-
-【被告答辩】
-{state["defendant_response"]}
-
-【法官归纳的争议焦点】
-{state["disputed_issues"]}
-
-【举证质证情况】
-{state["evidence_exam"]}
-
-请综合庭审情况，发表最后陈述。总结己方核心论点，回应对方关键抗辩。"""
-    result = llm_call(PLAINTIFF_PROMPT, msg)
-    return {"plaintiff_final": result}
-
-
-def node_defendant_final(state: TrialState) -> dict:
-    """被告律师：最后陈述"""
-    msg = f"""请发表最后陈述（答辩意见总结）。
-
-【案由】{state["case_title"]}
-【原告诉讼请求】{state["claims"]}
-
-【原告起诉分析】
-{state["plaintiff_opening"]}
-
-【你的答辩分析】
-{state["defendant_response"]}
-
-【法官归纳的争议焦点】
-{state["disputed_issues"]}
-
-【举证质证情况】
-{state["evidence_exam"]}
-
-请综合庭审情况，发表最后陈述。总结己方核心抗辩论点。"""
-    result = llm_call(DEFENDANT_PROMPT, msg)
-    return {"defendant_final": result}
-
-
-def node_judgment(state: TrialState) -> dict:
-    """法官：判决 + 胜率评估"""
-    msg = build_judgment_message(
-        state["case_title"], state["facts"],
-        state["evidence"], state["claims"],
-        state["plaintiff_opening"], state["defendant_response"],
-        state["evidence_exam"]
+def run_phase5(session: TrialSession) -> str:
+    """Phase 5: 法官归纳争议焦点"""
+    msg = build_judge_phase5_msg(
+        session.case_input.case_title,
+        session.case_input.claims,
+        session.phase2_complaint,
+        session.phase4_answer,
     )
-    result = llm_call(JUDGE_PROMPT, msg, max_tokens=8192)
-    return {"judgment": result, "win_rate": _extract_win_rate(result)}
+    result = llm_call(JUDGE_SYSTEM, msg)
+    session.phase5_issues = result
+    session.current_phase = 5
+    return result
+
+
+def run_phase6a(session: TrialSession) -> str:
+    """Phase 6A: 交叉询问（返回 JSON）"""
+    msg = build_cross_exam_msg(
+        session.case_input.case_title,
+        session.phase2_complaint,
+        session.phase4_answer,
+        "",  # plaintiff evidence catalog
+        "",
+        session.phase5_issues,
+    )
+    result = llm_call(JUDGE_SYSTEM, msg, max_tokens=8192)
+    session.phase6_cross_exam = result
+    return result
+
+
+def run_phase6b(session: TrialSession) -> str:
+    """Phase 6B: 举证质证"""
+    msg = build_evidence_exam_msg(
+        session.case_input.evidence,
+        "",  # plaintiff evidence catalog
+        "",
+    )
+    result = llm_call(JUDGE_SYSTEM, msg, max_tokens=8192)
+    session.phase6_evidence_exam = result
+    return result
+
+
+def run_phase6(session: TrialSession) -> dict:
+    """Phase 6 完整：交叉询问 + 举证质证"""
+    cross_exam = run_phase6a(session)
+    evidence_exam = run_phase6b(session)
+    session.current_phase = 6
+    return {
+        "cross_exam": cross_exam,
+        "evidence_exam": evidence_exam,
+    }
+
+
+def run_phase7(session: TrialSession) -> dict:
+    """Phase 7: 双方最后陈述"""
+    pf = run_phase7_plaintiff(session)
+    df = run_phase7_defendant(session)
+    session.current_phase = 7
+    return {"plaintiff_final": pf, "defendant_final": df}
+
+
+def run_phase7_plaintiff(session: TrialSession) -> str:
+    msg = build_final_statement_plaintiff_msg(
+        session.case_input.case_title,
+        session.case_input.claims,
+        session.phase2_complaint,
+        session.phase6_cross_exam,
+        session.phase6_evidence_exam,
+    )
+    result = llm_call(PLAINTIFF_SYSTEM, msg)
+    session.phase7_plaintiff_final = result
+    return result
+
+
+def run_phase7_defendant(session: TrialSession) -> str:
+    msg = build_final_statement_defendant_msg(
+        session.case_input.case_title,
+        session.case_input.claims,
+        session.phase4_answer,
+        session.phase6_cross_exam,
+        session.phase6_evidence_exam,
+    )
+    result = llm_call(DEFENDANT_SYSTEM, msg)
+    session.phase7_defendant_final = result
+    return result
+
+
+def run_phase8(session: TrialSession) -> str:
+    """Phase 8: 判决 + 胜率评估"""
+    msg = build_judgment_msg(
+        session.case_input.case_title,
+        session.case_input.facts,
+        session.case_input.claims,
+        session.phase2_complaint,
+        session.phase4_answer,
+        session.phase6_cross_exam,
+        session.phase6_evidence_exam,
+        session.phase7_plaintiff_final,
+        session.phase7_defendant_final,
+    )
+    result = llm_call(JUDGE_SYSTEM, msg, max_tokens=8192)
+    session.phase8_judgment = result
+    session.phase8_win_rate = _extract_win_rate(result)
+    session.current_phase = 8
+    return result
 
 
 def _extract_win_rate(judgment: str) -> float:
-    """从判决文本中提取综合胜率"""
     import re
-    # 匹配 "综合胜率" 后面的数字
-    patterns = [
+    for p in [
         r"综合胜率[^\d]*(\d+(?:\.\d+)?)\s*%",
         r"综合胜率.*?(\d+(?:\.\d+)?)\s*%",
         r"胜诉.*?(\d+(?:\.\d+)?)\s*%",
-    ]
-    for p in patterns:
+    ]:
         m = re.search(p, judgment)
         if m:
             return float(m.group(1))
     return 0.0
 
 
-# ---- 构建图 ----
-def build_trial_graph() -> StateGraph:
-    graph = StateGraph(TrialState)
+# ---- 阶段调度器 ----
+def run_phase(session: TrialSession, phase: int) -> dict:
+    """执行指定阶段，返回 {phase, label, content, needs_confirm}"""
+    runners = {
+        1: run_phase1,
+        2: run_phase2,
+        3: run_phase3,
+        4: run_phase4,
+        5: run_phase5,
+        6: run_phase6,
+        7: run_phase7,
+        8: run_phase8,
+    }
+    if phase not in runners:
+        return {"error": f"Invalid phase: {phase}"}
 
-    graph.add_node("plaintiff_opening", node_plaintiff_opening)
-    graph.add_node("defendant_response", node_defendant_response)
-    graph.add_node("judge_issues", node_judge_issues)
-    graph.add_node("evidence_exam", node_evidence_exam)
-    graph.add_node("plaintiff_final", node_plaintiff_final)
-    graph.add_node("defendant_final", node_defendant_final)
-    graph.add_node("judgment", node_judgment)
-
-    # 线性流程
-    graph.set_entry_point("plaintiff_opening")
-    graph.add_edge("plaintiff_opening", "defendant_response")
-    graph.add_edge("defendant_response", "judge_issues")
-    graph.add_edge("judge_issues", "evidence_exam")
-    graph.add_edge("evidence_exam", "plaintiff_final")
-    graph.add_edge("plaintiff_final", "defendant_final")
-    graph.add_edge("defendant_final", "judgment")
-    graph.add_edge("judgment", END)
-
-    return graph.compile()
-
-
-PHASE_ORDER = [
-    "plaintiff_opening",
-    "defendant_response",
-    "judge_issues",
-    "evidence_exam",
-    "plaintiff_final",
-    "defendant_final",
-    "judgment",
-]
-
-PHASE_LABELS = {
-    "plaintiff_opening": "原告律师：起诉策略分析",
-    "defendant_response": "被告律师：答辩分析",
-    "judge_issues": "法官：争议焦点归纳",
-    "evidence_exam": "法官主持：举证质证",
-    "plaintiff_final": "原告律师：最后陈述",
-    "defendant_final": "被告律师：最后陈述",
-    "judgment": "法官：判决与胜率评估",
-}
-
-
-def make_initial_state(case_input: CaseInput) -> TrialState:
+    result = runners[phase](session)
     return {
-        "case_title": case_input.case_title,
-        "facts": case_input.facts,
-        "evidence": case_input.evidence,
-        "claims": case_input.claims,
-        "plaintiff_opening": "",
-        "defendant_response": "",
-        "disputed_issues": "",
-        "evidence_exam": "",
-        "plaintiff_final": "",
-        "defendant_final": "",
-        "judgment": "",
-        "win_rate": 0.0,
+        "phase": phase,
+        "label": PHASE_LABELS[phase],
+        "content": result,
+        "needs_confirm": needs_confirmation(phase, session.user_role),
     }
 
 
-# ---- 庭审执行器（同步，供 Streamlit 等非异步前端使用） ----
-def run_trial_sync(case_input: CaseInput) -> list[dict]:
-    """同步执行完整庭审，返回各阶段结果列表。
-    每项: {phase, label, content}
+def run_all_phases(session: TrialSession, start_phase: int = 1,
+                   user_role: str = "neutral") -> list[dict]:
     """
-    graph = build_trial_graph()
-    initial = make_initial_state(case_input)
-    final = graph.invoke(initial)
-
+    从 start_phase 开始连续执行所有阶段。
+    遇到需要确认的阶段时暂停，返回已执行的阶段列表。
+    调用方可以检查最后一个阶段的 needs_confirm 来决定是否继续。
+    """
+    session.user_role = user_role
     results = []
-    for phase in PHASE_ORDER:
-        content = final.get(phase, "")
-        if content:
-            results.append({
-                "phase": phase,
-                "label": PHASE_LABELS[phase],
-                "content": content,
-            })
+    for phase in range(start_phase, 9):
+        result = run_phase(session, phase)
+        results.append(result)
+
+        # 如果需要确认，暂停
+        if result.get("needs_confirm"):
+            break
+
     return results
-
-
-# ---- 庭审执行器（异步流式，供 SSE 等实时推送前端使用） ----
-async def run_trial_stream(case_input: CaseInput):
-    """流式执行庭审，逐阶段 yield (phase_name, phase_label, content)"""
-    graph = build_trial_graph()
-    initial = make_initial_state(case_input)
-
-    final_state = initial.copy()
-    async for event in graph.astream(initial, stream_mode="updates"):
-        for node_name, node_output in event.items():
-            label = PHASE_LABELS.get(node_name, node_name)
-            for key, value in node_output.items():
-                if value:
-                    final_state[key] = value
-                    yield node_name, label, value
