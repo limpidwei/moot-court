@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+node_modules/
+.next/
+out/
+
+# Logs
+*.log
+# Runtime data
+data/chroma_db/
+data/ontologies/
+data/uploads/
