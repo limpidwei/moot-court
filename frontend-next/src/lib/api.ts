@@ -2,6 +2,20 @@
 
 const API_BASE = "http://127.0.0.1:8000";
 
+// 长请求（庭审阶段调用）的超时时间：5 分钟
+const LONG_TIMEOUT = 5 * 60 * 1000;
+
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = LONG_TIMEOUT) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function createCase(data: {
   case_title: string;
   facts: string;
@@ -37,7 +51,7 @@ export async function parseFile(file: File) {
 }
 
 export async function startTrial(caseId: string, userRole: string) {
-  const res = await fetch(`${API_BASE}/trial/start`, {
+  const res = await fetchWithTimeout(`${API_BASE}/trial/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ case_id: caseId, user_role: userRole }),
@@ -50,7 +64,7 @@ export async function continueTrial(
   confirmedPhase: number,
   editedContent?: string
 ) {
-  const res = await fetch(`${API_BASE}/trial/continue`, {
+  const res = await fetchWithTimeout(`${API_BASE}/trial/continue`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
