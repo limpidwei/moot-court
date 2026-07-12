@@ -7,7 +7,7 @@
 """
 
 from datetime import datetime
-from ..orchestration.graph import TrialSession, PHASE_LABELS
+from ..orchestration.workflow import TrialSession, PHASE_LABELS
 
 
 def export_markdown(session: TrialSession) -> str:

@@ -1,11 +1,15 @@
 "use client";
 
-// 微信气泡式对话组件 — 用于交叉询问展示
+// 微信气泡式对话组件 — 用于交叉询问展示（支持 Markdown 渲染）
+
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export interface ChatMessage {
-  round: number;
+  round?: number;
+  item?: number | string;
   speaker: "plaintiff" | "defendant" | "judge";
-  type: "question" | "answer" | "guidance";
+  type: "question" | "answer" | "guidance" | "focus" | "comment" | "cross_examine" | "ruling";
   content: string;
 }
 
@@ -27,7 +31,21 @@ export default function ChatBubble({ messages }: { messages: ChatMessage[] }) {
             ? "提问"
             : msg.type === "answer"
             ? "回答"
+            : msg.type === "focus"
+            ? "归纳焦点"
+            : msg.type === "comment"
+            ? "发表意见"
+            : msg.type === "cross_examine"
+            ? "质证"
+            : msg.type === "ruling"
+            ? "小结"
             : "引导";
+
+        const indexLabel = msg.round
+          ? ` · 第${msg.round}轮`
+          : msg.item
+          ? ` · 第${msg.item}项`
+          : "";
 
         return (
           <div
@@ -64,9 +82,13 @@ export default function ChatBubble({ messages }: { messages: ChatMessage[] }) {
                     : "text-yellow-600"
                 }`}
               >
-                {roleName} {typeName} · 第{msg.round}轮
+                {roleName} {typeName}{indexLabel}
               </div>
-              <div className="whitespace-pre-wrap">{msg.content}</div>
+              <div className="whitespace-pre-wrap prose prose-sm max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
             </div>
           </div>
         );

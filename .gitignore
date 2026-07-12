@@ -21,6 +21,9 @@ out/
 
 # Logs
 *.log
+
+# Session data
+data/sessions.json
 # Runtime data
 data/chroma_db/
 data/ontologies/

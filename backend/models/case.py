@@ -15,6 +15,22 @@ class CaseInput:
     claims: str              # 诉讼请求
     plaintiff_position: str = ""  # 用户是哪一方（原告/被告/中立）
 
+    # 单方对抗模式字段（Phase B）
+    mode: str = "neutral"           # "neutral" | "asymmetric"
+    user_side: str = ""             # "plaintiff" | "defendant" | ""
+    user_strategy_hint: str = ""    # 用户策略倾向提示（可选）
+    opponent_materials: str = ""    # AI 生成的对方材料（单方模式下）
+
+    # 案卷原始材料（双轨制：结构化数据 + 原始全文）
+    source_materials: str = ""      # 用户输入的原始完整文本
+
+    # 单方对抗模式：AI 对手对抗强度（1-5，默认 3）
+    adversarial_intensity: int = 3
+
+    # 可视化预留字段（未来由证据梳理模块填充）
+    timeline_events: list = field(default_factory=list)   # TimelineEvent 列表
+    party_relations: list = field(default_factory=list)    # PartyRelation 列表
+
 
 @dataclass
 class TrialRecord:
