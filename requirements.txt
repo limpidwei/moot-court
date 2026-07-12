@@ -1,0 +1,46 @@
+# Backend dependencies for moot-court
+# Install with: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.115.0
+uvicorn>=0.30.0
+sse-starlette>=2.0.0
+python-multipart>=0.0.5
+
+# LangGraph workflow
+langgraph>=0.2.0
+
+# LLM
+openai>=1.55.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Auth
+pyjwt>=2.8.0
+bcrypt>=4.1.0
+
+# RAG (Retrieval-Augmented Generation)
+chromadb>=1.5.0
+sentence-transformers>=2.2.0
+
+# Utils
+python-dotenv>=1.0.0
+numpy>=1.24.0
+
+# PDF / Document processing
+PyMuPDF>=1.23.0
+python-docx>=1.1.0
+pdfplumber>=0.10.0
+pillow>=10.0.0
+pytesseract>=0.3.13
+pydantic-settings>=2.0.0
+
+
+# Visualization backend
+matplotlib>=3.7.0
+reportlab>=4.0.0
+
+# Caching (prepared for Redis)
+redis>=5.0.0

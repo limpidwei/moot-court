@@ -6,6 +6,8 @@
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { parseText, parseFile, createCase } from "@/lib/api";
+import ModelConfigPanel from "@/components/ModelConfigPanel";
+import type { LLMConfig } from "@/lib/api";
 
 export default function NewCasePage() {
   const router = useRouter();
@@ -17,6 +19,9 @@ export default function NewCasePage() {
   const [evidence, setEvidence] = useState("");
   const [claims, setClaims] = useState("");
 
+  // 案卷原始材料（双轨制保留）
+  const [sourceMaterials, setSourceMaterials] = useState("");
+
   // 智能录入
   const [pasteText, setPasteText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -25,8 +30,16 @@ export default function NewCasePage() {
   // 提交
   const [submitting, setSubmitting] = useState(false);
 
-  // 代理模式
-  const [userRole, setUserRole] = useState("neutral");
+  // 模式选择
+  const [mode, setMode] = useState("neutral");
+  const [userSide, setUserSide] = useState("");
+  const [userStrategyHint, setUserStrategyHint] = useState("");
+
+  // 对抗强度（单方对抗模式下有效）
+  const [adversarialIntensity, setAdversarialIntensity] = useState(3);
+
+  // LLM 配置
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
 
   const handlePasteParse = async () => {
     if (!pasteText.trim()) return;
@@ -48,9 +61,10 @@ export default function NewCasePage() {
             .join("\n")
         );
         setClaims((result.claims || []).join("\n"));
+        setSourceMaterials(result.raw_text || pasteText);
       }
-    } catch {
-      setParseError("解析失败，请检查后端是否启动");
+    } catch (e: any) {
+      setParseError(e.message || "解析失败，请检查网络连接");
     }
     setParsing(false);
   };
@@ -76,9 +90,10 @@ export default function NewCasePage() {
             .join("\n")
         );
         setClaims((result.claims || []).join("\n"));
+        setSourceMaterials(result.raw_text || "");
       }
-    } catch {
-      setParseError("文件解析失败，请检查后端是否启动");
+    } catch (e: any) {
+      setParseError(e.message || "文件解析失败，请检查网络连接");
     }
     setParsing(false);
   };
@@ -90,10 +105,35 @@ export default function NewCasePage() {
     }
     setSubmitting(true);
     try {
-      const res = await createCase({ case_title: caseTitle, facts, evidence, claims });
+      const payload: {
+        case_title: string;
+        facts: string;
+        evidence: string;
+        claims: string;
+        mode: string;
+        user_side: string;
+        user_strategy_hint: string;
+        source_materials: string;
+        adversarial_intensity: number;
+        llm_config?: LLMConfig;
+      } = {
+        case_title: caseTitle,
+        facts,
+        evidence,
+        claims,
+        mode,
+        user_side: userSide,
+        user_strategy_hint: userStrategyHint,
+        source_materials: sourceMaterials,
+        adversarial_intensity: adversarialIntensity,
+      };
+      if (llmConfig) {
+        payload.llm_config = llmConfig;
+      }
+      const res = await createCase(payload);
       const caseId = res.case_id;
-      // 跳转到庭审页，附带代理模式
-      router.push(`/trial/${caseId}?role=${userRole}`);
+      const startRole = mode === "asymmetric" ? userSide : "neutral";
+      router.push(`/trial/${caseId}?role=${startRole}`);
     } catch {
       alert("提交失败，请检查后端是否启动");
     }
@@ -101,7 +141,7 @@ export default function NewCasePage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-4xl mx-auto p-4 lg:p-6">
       <button
         onClick={() => router.push("/")}
         className="text-blue-600 text-sm mb-6 hover:underline"
@@ -156,6 +196,9 @@ export default function NewCasePage() {
         )}
       </div>
 
+      {/* 模型配置 */}
+      <ModelConfigPanel value={llmConfig} onChange={setLlmConfig} />
+
       {/* 表单区 */}
       <div className="space-y-5">
         <div>
@@ -207,23 +250,25 @@ export default function NewCasePage() {
           />
         </div>
 
-        {/* 代理模式 */}
+        {/* 模式选择 */}
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">
-            代理模式
+            庭审模式
           </label>
           <div className="flex gap-3">
             {[
-              { value: "neutral", label: "👀 中立观察", desc: "双方法律意见自动生成" },
-              { value: "plaintiff", label: "🎯 代理原告", desc: "原告策略分步确认可修改" },
-              { value: "defendant", label: "🛡️ 代理被告", desc: "被告策略分步确认可修改" },
+              { value: "neutral", label: "👀 中立观察", desc: "双方材料均已知，AI 自动生成全流程" },
+              { value: "asymmetric", label: "⚔️ 单方对抗", desc: "只输入单方材料，AI 生成对方材料" },
             ].map((opt) => (
               <button
                 key={opt.value}
-                onClick={() => setUserRole(opt.value)}
+                onClick={() => {
+                  setMode(opt.value);
+                  if (opt.value === "neutral") setUserSide("");
+                }}
                 className={`flex-1 p-3 rounded-lg text-sm text-left border
                   ${
-                    userRole === opt.value
+                    mode === opt.value
                       ? "border-blue-400 bg-blue-50"
                       : "border-gray-200 hover:bg-gray-50"
                   }`}
@@ -235,9 +280,89 @@ export default function NewCasePage() {
           </div>
         </div>
 
+        {/* 单方对抗：选择扮演角色 */}
+        {mode === "asymmetric" && (
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">
+              你选择扮演
+            </label>
+            <div className="flex gap-3">
+              {[
+                { value: "plaintiff", label: "🎯 原告律师", desc: "掌握原告材料，被告材料由 AI 生成" },
+                { value: "defendant", label: "🛡️ 被告律师", desc: "掌握被告材料，原告材料由 AI 生成" },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setUserSide(opt.value)}
+                  className={`flex-1 p-3 rounded-lg text-sm text-left border
+                    ${
+                      userSide === opt.value
+                        ? "border-blue-400 bg-blue-50"
+                        : "border-gray-200 hover:bg-gray-50"
+                    }`}
+                >
+                  <div className="font-semibold">{opt.label}</div>
+                  <div className="text-xs text-gray-500 mt-1">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* 策略倾向（可选） */}
+            <div className="mt-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">
+                策略倾向（可选）
+              </label>
+              <textarea
+                value={userStrategyHint}
+                onChange={(e) => setUserStrategyHint(e.target.value)}
+                placeholder="例如：主张合同无效 / 主张对方违约 / 主张不可抗力..."
+                className="w-full h-20 px-4 py-2 border rounded-lg text-sm"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                填写后 AI 会优先按此方向生成策略路线
+              </p>
+            </div>
+
+            {/* 对抗强度滑块 */}
+            <div className="mt-6 bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-3">
+                🤖 AI 对手对抗强度
+              </label>
+              <div className="flex items-center gap-4">
+                <span className="text-xs text-gray-500 whitespace-nowrap">保守</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={5}
+                  step={1}
+                  value={adversarialIntensity}
+                  onChange={(e) => setAdversarialIntensity(Number(e.target.value))}
+                  className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
+                <span className="text-xs text-gray-500 whitespace-nowrap">激进</span>
+              </div>
+              <div className="flex justify-between text-xs text-gray-400 mt-1 px-1">
+                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+              </div>
+              <p className="text-xs text-gray-600 mt-2 font-medium">
+                {adversarialIntensity <= 2 && "强度 1-2（保守）：AI 对手较弱，主要依赖事实解释，几乎不编造新证据"}
+                {adversarialIntensity === 3 && "强度 3（平衡）：AI 对手适中，允许编造聊天记录和证人证言"}
+                {adversarialIntensity >= 4 && "强度 4-5（激进）：AI 对手较强，允许更多类型的对抗性证据"}
+              </p>
+            </div>
+          </div>
+        )}
+
         <button
           onClick={handleSubmit}
-          disabled={submitting || !caseTitle || !facts || !evidence || !claims}
+          disabled={
+            submitting ||
+            !caseTitle ||
+            !facts ||
+            !evidence ||
+            !claims ||
+            (mode === "asymmetric" && !userSide)
+          }
           className="w-full bg-green-600 text-white px-6 py-4 rounded-xl text-lg font-semibold
                      disabled:opacity-50 hover:bg-green-700 transition shadow-lg"
         >

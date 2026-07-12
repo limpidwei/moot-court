@@ -21,3 +21,6 @@ out/
 
 # Logs
 *.log
+
+# Session data
+data/sessions.json

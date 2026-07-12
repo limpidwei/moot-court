@@ -3,6 +3,8 @@
 // 庭后法官问答组件
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { askJudge } from "@/lib/api";
 
 export default function JudgeQA({ caseId }: { caseId: string }) {
@@ -37,8 +39,8 @@ export default function JudgeQA({ caseId }: { caseId: string }) {
           <div className="bg-blue-50 text-blue-900 px-4 py-2 rounded-lg text-sm font-semibold">
             🙋 {qa.q}
           </div>
-          <div className="bg-gray-50 text-gray-700 px-4 py-3 rounded-lg text-sm mt-1 whitespace-pre-wrap">
-            ⚖️ {qa.a}
+          <div className="bg-gray-50 text-gray-700 px-4 py-3 rounded-lg text-sm mt-1 prose prose-sm max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{qa.a}</ReactMarkdown>
           </div>
         </div>
       ))}
