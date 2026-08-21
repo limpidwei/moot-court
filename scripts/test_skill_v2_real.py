@@ -1,6 +1,6 @@
 """
 真实 LLM 完整庭审测试 —— 验证新 Skill Prompt 效果
-运行：cd /c/Users/86186/moot-court && py scripts/test_skill_v2_real.py
+运行：cd /path/to/moot-court && py scripts/test_skill_v2_real.py
 """
 import os
 import sys
