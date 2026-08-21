@@ -7,7 +7,7 @@
 - Insight / 可视化（test_insights.py）
 
 运行方式：
-    cd /c/Users/86186/moot-court
+    cd /path/to/moot-court
     py -m pytest tests/regression/ -v
 
 原则：

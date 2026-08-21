@@ -2,7 +2,7 @@
 Agent V2 集成测试 —— mock LLM，端到端验证 Phase 1-8 图执行无报错
 
 运行：
-    cd /c/Users/86186/moot-court
+    cd /path/to/moot-court
     USE_AGENT_V2=true py -m pytest tests/test_v2_integration.py -v
 """
 
