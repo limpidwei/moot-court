@@ -24,3 +24,4 @@ out/
 
 # Session data
 data/sessions.json
+data/sessions.backup-*.json
