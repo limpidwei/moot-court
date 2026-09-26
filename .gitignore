@@ -24,6 +24,7 @@ out/
 
 # Session data
 data/sessions.json
+data/sessions.backup-*.json
 # Runtime data
 data/chroma_db/
 data/ontologies/

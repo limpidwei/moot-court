@@ -9,6 +9,7 @@ PDF 报告导出服务
 
 import io
 import json
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -46,8 +47,120 @@ def _get_viz_by_type(_analysis: CaseAnalysis, _viz_type: str) -> dict | None:
     # 可视化功能已下线，PDF 导出不再嵌入图表
     return None
 
+
+# ---------------------------------------------------------------------------
+# 2026-09-26 viz 恢复（demo 导向）：从 session 已有庭审产出组装图表数据。
+# 全部数据来自真实庭审阶段字段（facts / phase8_judgment / evidence_list / claims），
+# 零 LLM 调用；无数据时对应图表优雅跳过。
+# ---------------------------------------------------------------------------
+
+_DATE_EVENT_RE = re.compile(r"(\d{4}年\d{1,2}月\d{1,2}日)[，,]?\s*([^；。\n]{4,60})")
+_DIM_SCORE_RE = re.compile(r"\*{0,2}([^|\n*]{2,20})\*{0,2}\s*\|\s*\*{0,2}\s*(\d{1,3})\s*分")
+_LAW_ARTICLE_RE = re.compile(r"《[^》]{2,30}》第[零一二三四五六七八九十百千\d]+条")
+
+
+def _viz_from_session(session: TrialSession, analysis: CaseAnalysis, viz_type: str) -> dict | None:
+    """按 viz_type 从 session 组装图表数据；数据不足时返回 None（图表跳过）。"""
+    ci = getattr(session, "case_input", None)
+    facts = (getattr(ci, "facts", "") or "") if ci is not None else ""
+    judgment = getattr(session, "phase8_judgment", "") or ""
+
+    if viz_type == "timeline":
+        if not facts:
+            return None
+        events = []
+        for m in _DATE_EVENT_RE.finditer(facts):
+            date, label = m.group(1), m.group(2).strip()
+            if any(k in label for k in ("合同", "协议", "签约")):
+                etype = "contract"
+            elif any(k in label for k in ("不良", "缺陷", "未达", "不符", "违约", "故障")):
+                etype = "breach"
+            elif any(k in label for k in ("解除", "函", "检测", "委托", "协商", "会议")):
+                etype = "action"
+            else:
+                etype = "other"
+            events.append({"date": date, "label": label, "type": etype})
+        return {"events": events[:12]} if events else None
+
+    if viz_type == "win_rate_radar":
+        # 维度分优先读 analysis 结构化字段（新案件），旧案件从判决书"胜率评估"表格解析
+        dims_raw = getattr(analysis, "win_rate_dimensions", None) or {}
+        dims = []
+        if isinstance(dims_raw, dict) and dims_raw:
+            for name, score in dims_raw.items():
+                try:
+                    s = float(score)
+                except (TypeError, ValueError):
+                    continue
+                if 0 < s <= 100:
+                    dims.append({"name": str(name)[:10], "score": s})
+        if not dims and judgment:
+            idx = judgment.find("胜率评估")
+            seg = judgment[idx: idx + 1500] if idx >= 0 else judgment
+            for m in _DIM_SCORE_RE.finditer(seg):
+                name = m.group(1).strip().strip("*").strip()
+                try:
+                    score = float(m.group(2))
+                except ValueError:
+                    continue
+                if 0 < score <= 100 and name and "综合" not in name:
+                    dims.append({"name": name, "score": score})
+        if not dims:
+            return None
+        overall = float(getattr(session, "phase8_win_rate", 0.0) or 0.0)
+        return {"dimensions": dims[:6], "overall": overall}
+
+    if viz_type == "evidence_chain":
+        raw = getattr(session, "evidence_list", None) or []
+        items = []
+        for i, e in enumerate(raw):
+            if isinstance(e, dict):
+                items.append({
+                    "id": str(e.get("id", f"E{i + 1}")),
+                    "name": str(e.get("name", ""))[:22] or f"证据{i + 1}",
+                    "strength": e.get("strength", "medium"),
+                })
+            elif isinstance(e, str) and e.strip():
+                # 旧格式："《名称》（类型）—— 描述"；名称取"（"前部分
+                text = e.strip()
+                name = re.split(r"[（(]", text)[0].strip()[:22] or text[:22]
+                # 强度启发式：鉴定/检测类证据证明力标注为 strong，仅影响配色，不做事实判断
+                strength = "strong" if any(k in text for k in ("检测报告", "鉴定", "判决")) else "medium"
+                items.append({"id": f"E{i + 1}", "name": name, "strength": strength})
+        return {"items": items, "chains": []} if items else None
+
+    if viz_type == "claim_basis_tree":
+        claims_text = (getattr(ci, "claims", "") or "") if ci is not None else ""
+        claim_list = [re.sub(r"^\d+[\.、]\s*", "", c.strip()) for c in re.split(r"[\n;；]", claims_text) if c.strip()]
+        if not claim_list:
+            return None
+        laws = _LAW_ARTICLE_RE.findall(judgment)
+        main_law = next((law for law in laws if "民法典" in law), (laws[0] if laws else ""))
+        # 判决主文（"判决如下"之后）出现的请求视为被支持（established）
+        holding_seg = ""
+        hidx = judgment.find("判决如下")
+        if hidx >= 0:
+            holding_seg = judgment[hidx: hidx + 900]
+        children = []
+        for c in claim_list[:4]:
+            label = c.strip("，。；、")[:20]
+            if not label:
+                continue
+            status = "unknown"
+            if holding_seg:
+                key = label[:6]
+                status = "established" if key in holding_seg else "disputed"
+            children.append({"label": label, "law": "", "status": status})
+        if not children:
+            return None
+        return {"root": {"label": "请求权基础", "law": main_law, "status": "established", "children": children}}
+
+    return None
+
 # 颜色定义
 PRIMARY_COLOR = HexColor('#2563eb')
+# matplotlib 不接受 reportlab HexColor 对象，渲染函数用原生 hex 字符串
+VIZ_PRIMARY = '#2563eb'
 SUCCESS_COLOR = HexColor('#10b981')
 WARNING_COLOR = HexColor('#f59e0b')
 DANGER_COLOR = HexColor('#ef4444')
@@ -200,8 +313,8 @@ def _render_win_rate_radar(dimensions: list[dict], overall: float) -> Optional[i
     fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
 
     # 绘制雷达图
-    ax.plot(angles, values, 'o-', linewidth=2, color=PRIMARY_COLOR)
-    ax.fill(angles, values, alpha=0.25, color=PRIMARY_COLOR)
+    ax.plot(angles, values, 'o-', linewidth=2, color=VIZ_PRIMARY)
+    ax.fill(angles, values, alpha=0.25, color=VIZ_PRIMARY)
 
     # 设置标签
     ax.set_xticks(angles[:-1])
@@ -211,7 +324,7 @@ def _render_win_rate_radar(dimensions: list[dict], overall: float) -> Optional[i
     ax.set_yticklabels(['20', '40', '60', '80', '100'], fontsize=9)
 
     # 添加总分
-    ax.set_title(f'综合胜率: {overall:.1f}%', fontsize=16, fontweight='bold', pad=20, color=PRIMARY_COLOR)
+    ax.set_title(f'综合胜率: {overall:.1f}%', fontsize=16, fontweight='bold', pad=20, color=VIZ_PRIMARY)
 
     plt.tight_layout()
 
@@ -277,8 +390,8 @@ def _render_evidence_chain(items: list[dict], chains: list[dict]) -> Optional[io
                                        color='#9ca3af', linewidth=1.5)
                 ax.add_patch(arrow)
 
-    # 设置坐标轴
-    ax.set_xlim(-0.5, 12.5)
+    # 设置坐标轴（chains 为空时仅渲染证据节点，收窄画幅避免右侧留白）
+    ax.set_xlim(-0.5, 12.5 if chains else 4.5)
     ax.set_ylim(-0.5, max(len(items), len(chains)) + 0.5)
     ax.axis('off')
 
@@ -739,7 +852,7 @@ def generate_case_report(
     story.append(Spacer(1, 0.5*cm))
 
     # 时间轴
-    timeline_data = _get_viz_by_type(analysis, 'timeline')
+    timeline_data = _viz_from_session(session, analysis, 'timeline')
     if timeline_data and isinstance(timeline_data, dict) and 'events' in timeline_data:
         story.append(Paragraph('案件时间轴', heading2_style))
         chart_buf = _render_timeline_chart(timeline_data['events'])
@@ -749,7 +862,7 @@ def generate_case_report(
             story.append(Spacer(1, 0.5*cm))
 
     # 请求权基础树
-    claim_tree = _get_viz_by_type(analysis, 'claim_basis_tree')
+    claim_tree = _viz_from_session(session, analysis, 'claim_basis_tree')
     if claim_tree and isinstance(claim_tree, dict) and 'root' in claim_tree:
         story.append(Paragraph('请求权基础分析', heading2_style))
         chart_buf = _render_claim_basis_tree(claim_tree)
@@ -759,12 +872,12 @@ def generate_case_report(
             story.append(Spacer(1, 0.5*cm))
 
     # 胜率雷达图
-    win_rate_data = _get_viz_by_type(analysis, 'win_rate_radar')
+    win_rate_data = _viz_from_session(session, analysis, 'win_rate_radar')
     if win_rate_data and isinstance(win_rate_data, dict) and 'dimensions' in win_rate_data:
         story.append(Paragraph('胜率评估', heading2_style))
         chart_buf = _render_win_rate_radar(
             win_rate_data['dimensions'],
-            analysis.win_rate
+            win_rate_data.get('overall', analysis.win_rate)
         )
         if chart_buf:
             img = Image(chart_buf, width=10*cm, height=10*cm)
@@ -772,7 +885,7 @@ def generate_case_report(
             story.append(Spacer(1, 0.5*cm))
 
     # 证据链
-    evidence_chain = _get_viz_by_type(analysis, 'evidence_chain')
+    evidence_chain = _viz_from_session(session, analysis, 'evidence_chain')
     if evidence_chain and 'items' in evidence_chain:
         story.append(Paragraph('证据链分析', heading2_style))
         chart_buf = _render_evidence_chain(
